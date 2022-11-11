@@ -30,40 +30,33 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	reply.Term = rf.term
+	reply.Vote = false
 	// upToData:compare term first (need big or equal), if ok, compare index (need big or equal)
 	// if index is smaller, but term is bigger, is ok
-	upToData := args.LastLogTerm > rf.log[len(rf.log)-1].Term
-	upToData = upToData || (args.LastLogTerm == rf.log[len(rf.log)-1].Term && args.LastLogIndex >= rf.log[len(rf.log)-1].Index)
-	if args.Term < rf.term {
-		reply.Vote = false
-	} else if args.Term == rf.term {
+	var upToData bool
+	if len(rf.log) == 1 {
+		upToData = args.LastLogTerm > rf.logBaseTerm
+		upToData = upToData || (args.LastLogTerm == rf.logBaseTerm && args.LastLogIndex >= rf.logBaseTerm)
+	} else {
+		upToData = args.LastLogTerm > rf.log[len(rf.log)-1].Term
+		upToData = upToData || (args.LastLogTerm == rf.log[len(rf.log)-1].Term && args.LastLogIndex >= rf.log[len(rf.log)-1].Index)
+	}
+
+	if args.Term > rf.term {
+		rf.toBeFollower(args.Term)
+	}
+	if args.Term == rf.term {
 		if upToData {
-			if rf.voteFor == args.Candidate || rf.voteFor == -1 {
+			if rf.voteFor == -1 {
 				reply.Vote = true
 				rf.voteFor = args.Candidate
 				rf.state = follow
 				rf.persist()
+				rf.electionTime = rf.setElectionTime()
 			}
-		} else {
-			reply.Vote = false
-		}
-	} else if args.Term > rf.term {
-		if upToData {
-			reply.Vote = true
-			rf.voteFor = args.Candidate
-			rf.term = args.Term
-			reply.Term = rf.term
-			rf.state = follow
-			rf.persist()
-		} else {
-			rf.term = args.Term
-			reply.Term = rf.term
-			rf.persist()
-			reply.Vote = false
 		}
 	}
 
-	rf.electionTime = rf.setElectionTime()
 	// Your code here (2A, 2B).
 }
 
@@ -88,6 +81,10 @@ func (rf *Raft) leaderElection() {
 		LastLogIndex: rf.log[len(rf.log)-1].Index,
 		LastLogTerm:  rf.log[len(rf.log)-1].Term,
 	}
+	if len(rf.log) == 1 {
+		args.LastLogTerm = rf.logBaseTerm
+		args.LastLogIndex = rf.logBaseIndex
+	}
 	voteCount := 1
 	for idx, _ := range rf.peers {
 		if idx != rf.me {
@@ -106,12 +103,10 @@ func (rf *Raft) candidateRequestVote(idx int, args *RequestVoteArgs, voteCount *
 	defer rf.mu.Unlock()
 	if rf.state == candidate {
 		if reply.Term > args.Term {
-			rf.term = reply.Term
-			rf.voteFor = -1
-			rf.state = follow
+			rf.toBeFollower(reply.Term)
 			rf.persist()
 			return
-		} else if reply.Term == args.Term {
+		} else if reply.Term <= args.Term {
 			if reply.Vote == true {
 				*voteCount++
 			} else {
@@ -130,4 +125,10 @@ func (rf *Raft) candidateRequestVote(idx int, args *RequestVoteArgs, voteCount *
 		}
 	}
 
+}
+
+func (rf *Raft) toBeFollower(term int) {
+	rf.term = term
+	rf.state = follow
+	rf.voteFor = -1
 }

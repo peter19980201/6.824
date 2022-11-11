@@ -219,16 +219,16 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	log := Entry{
 		Command: command,
 		Term:    rf.term,
-		Index:   len(rf.log),
+		Index:   rf.logBaseIndex + len(rf.log),
 	}
 
 	rf.log = append(rf.log, log)
 	//fmt.Println(rf.me, "new Entry coming...", command)
-	rf.matchIndex[rf.me] = len(rf.log) - 1
+	rf.matchIndex[rf.me] = rf.logBaseIndex + len(rf.log) - 1
 	rf.persist()
 	go rf.appendEntries(false)
 
-	index = len(rf.log) - 1
+	index = rf.logBaseIndex + len(rf.log) - 1
 	term = rf.term
 	isLeader = true
 
@@ -262,14 +262,13 @@ func (rf *Raft) ticker() {
 	for rf.killed() == false {
 		time.Sleep(rf.heartBeat)
 		rf.mu.Lock()
-		//fmt.Println(rf.me, rf.log, rf.commitIndex)
+		fmt.Println(rf.me, rf.state, rf.term, rf.log[len(rf.log)-1], rf.commitIndex, rf.nextIndex)
 		//fmt.Println(rf.me, "state:", rf.state, "term:", rf.term, "voteFor:", rf.voteFor)
 		if rf.state == leader {
-			rf.electionTime = rf.setElectionTime()
 			go rf.appendEntries(true)
 		}
 		if time.Now().After(rf.electionTime) {
-			//fmt.Println(rf.me, "time out! become candidate!")
+			//fmt.Println(rf.me, "time out! become candidate!", rf.term+1)
 			go rf.leaderElection()
 		}
 		rf.mu.Unlock()
@@ -279,17 +278,6 @@ func (rf *Raft) ticker() {
 	}
 }
 
-//
-// the service or tester wants to create a Raft server. the ports
-// of all the Raft servers (including this one) are in peers[]. this
-// server's port is peers[me]. all the servers' peers[] arrays
-// have the same order. persister is a place for this server to
-// save its persistent state, and also initially holds the most
-// recent saved state, if any. applyCh is a channel on which the
-// tester or service expects Raft to send ApplyMsg messages.
-// Make() must return quickly, so it should start goroutines
-// for any long-running work.
-//
 func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{
 		peers:     peers,
@@ -334,8 +322,8 @@ func (rf *Raft) applier() {
 			rf.lastApplied++
 			applyMsg := ApplyMsg{
 				CommandValid: true,
-				Command:      rf.log[rf.lastApplied].Command,
-				CommandIndex: rf.log[rf.lastApplied].Index,
+				Command:      rf.log[rf.lastApplied-rf.logBaseIndex].Command,
+				CommandIndex: rf.log[rf.lastApplied-rf.logBaseIndex].Index,
 			}
 			rf.mu.Unlock()
 			//fmt.Println(rf.me, applyMsg)
@@ -347,6 +335,15 @@ func (rf *Raft) applier() {
 			time.Sleep(10 * time.Millisecond)
 			rf.mu.Lock()
 		}
+	}
+}
+
+func (rf *Raft) applySnapshot(args *InstallSnapshotArgs) {
+	rf.applyCh <- ApplyMsg{
+		SnapshotValid: true,
+		Snapshot:      args.Data,
+		SnapshotIndex: args.LastIncludeIndex,
+		SnapshotTerm:  args.LastIncludeTerm,
 	}
 }
 

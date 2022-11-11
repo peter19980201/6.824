@@ -9,12 +9,18 @@ import (
 func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
 
 	// Your code here (2D).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.electionTime = rf.setElectionTime()
 	if lastIncludedIndex <= rf.commitIndex {
 		return false
 	}
 
 	if lastIncludedIndex <= rf.log[len(rf.log)-1].Index {
-		rf.log = append([]Entry(nil), rf.log[lastIncludedIndex-rf.logBaseIndex:]...)
+		logs := append([]Entry(nil), rf.log[lastIncludedIndex-rf.logBaseIndex+1:]...)
+		rf.log = make([]Entry, 0)
+		rf.log = append(rf.log, Entry{-1, 0, 0})
+		rf.log = append(rf.log, logs...)
 	} else {
 		rf.log = append([]Entry(nil), Entry{-1, 0, 0})
 	}
@@ -36,10 +42,14 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if index <= rf.logBaseIndex {
+	if index <= rf.logBaseIndex || index > rf.commitIndex {
 		return
 	}
-	rf.log = rf.log[index-rf.logBaseIndex:]
+	//fmt.Println("start snapshot", rf.commitIndex)
+	logs := rf.log[index-rf.logBaseIndex+1:]
+	rf.log = make([]Entry, 0)
+	rf.log = append(rf.log, Entry{-1, 0, 0})
+	rf.log = append(rf.log, logs...)
 	rf.logBaseIndex = index
 	rf.snapshot = snapshot
 
@@ -80,6 +90,8 @@ func (rf *Raft) readSnapshot(data []byte) {
 
 func (rf *Raft) leaderSendSnapshot(idx int) {
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.electionTime = rf.setElectionTime()
 	args := &InstallSnapshotArgs{
 		Term:             rf.term,
 		LastIncludeIndex: rf.logBaseIndex,
@@ -90,8 +102,6 @@ func (rf *Raft) leaderSendSnapshot(idx int) {
 	reply := &InstallSnapshotReply{}
 	rf.sendSnapshot(idx, args, reply)
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
 	if reply.Term > rf.term {
 		rf.term = reply.Term
 		rf.state = follow
@@ -106,7 +116,6 @@ func (rf *Raft) leaderSendSnapshot(idx int) {
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	rf.electionTime = rf.setElectionTime()
 
 	if args.Term > rf.term {
 		rf.term = args.Term
@@ -119,12 +128,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		return
 	}
 
-	rf.applyCh <- ApplyMsg{
-		SnapshotValid: true,
-		Snapshot:      args.Data,
-		SnapshotIndex: args.LastIncludeIndex,
-		SnapshotTerm:  args.LastIncludeTerm,
-	}
+	go rf.applySnapshot(args)
 }
 
 type InstallSnapshotArgs struct {
@@ -139,6 +143,6 @@ type InstallSnapshotReply struct {
 }
 
 func (rf *Raft) sendSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
-	ok := rf.peers[server].Call("Raft.InstallSnapshot", &args, &reply)
+	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
 	return ok
 }
