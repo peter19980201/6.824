@@ -84,6 +84,7 @@ type Raft struct {
 	heartBeat    time.Duration
 	electionTime time.Time
 	voteFor      int
+	vote         bool
 
 	log         []Entry
 	commitIndex int
@@ -127,6 +128,8 @@ func (rf *Raft) persist() {
 	e.Encode(rf.term)
 	e.Encode(rf.log)
 	e.Encode(rf.voteFor)
+	e.Encode(rf.logBaseIndex)
+	e.Encode(rf.logBaseTerm)
 	data := w.Bytes()
 	//fmt.Println(rf.me, "persist")
 	rf.persister.SaveRaftState(data)
@@ -146,13 +149,18 @@ func (rf *Raft) readPersist(data []byte) {
 	var term int
 	var log []Entry
 	var voteFor int
-	if d.Decode(&term) != nil || d.Decode(&log) != nil || d.Decode(&voteFor) != nil {
+	var logBaseIndex int
+	var logBaseTerm int
+	if d.Decode(&term) != nil || d.Decode(&log) != nil || d.Decode(&voteFor) != nil || d.Decode(&logBaseIndex) != nil || d.Decode(&logBaseTerm) != nil {
 		fmt.Println("Decode error!")
 	} else {
 		//fmt.Println("restart:", term, log, voteFor)
 		rf.term = term
 		rf.log = log
 		rf.voteFor = voteFor
+		rf.logBaseTerm = logBaseTerm
+		rf.logBaseIndex = logBaseIndex
+		//fmt.Println("restart: logBaseIndex, logBaseTerm", rf.logBaseIndex, rf.logBaseTerm)
 	}
 }
 
@@ -262,8 +270,7 @@ func (rf *Raft) ticker() {
 	for rf.killed() == false {
 		time.Sleep(rf.heartBeat)
 		rf.mu.Lock()
-		fmt.Println(rf.me, rf.state, rf.term, rf.log[len(rf.log)-1], rf.commitIndex, rf.nextIndex)
-		//fmt.Println(rf.me, "state:", rf.state, "term:", rf.term, "voteFor:", rf.voteFor)
+		//fmt.Println(rf.me, rf.state, rf.term, rf.log, rf.commitIndex, rf.nextIndex, "state:", rf.state, "term:", rf.term, "voteFor:", rf.voteFor)
 		if rf.state == leader {
 			go rf.appendEntries(true)
 		}
@@ -304,7 +311,8 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 	rf.matchIndex = make([]int, len(peers))
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-	rf.readSnapshot(persister.ReadSnapshot())
+	rf.snapshot = rf.readSnapshot(persister.ReadSnapshot())
+	rf.lastApplied = rf.logBaseIndex
 
 	// start ticker goroutine to start elections
 	go rf.ticker()

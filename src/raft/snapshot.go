@@ -3,7 +3,6 @@ package raft
 import (
 	"6.824/labgob"
 	"bytes"
-	"fmt"
 )
 
 func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
@@ -17,6 +16,7 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 	}
 
 	if lastIncludedIndex <= rf.log[len(rf.log)-1].Index {
+		//fmt.Println(lastIncludedIndex, rf.logBaseIndex)
 		logs := append([]Entry(nil), rf.log[lastIncludedIndex-rf.logBaseIndex+1:]...)
 		rf.log = make([]Entry, 0)
 		rf.log = append(rf.log, Entry{-1, 0, 0})
@@ -25,11 +25,12 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 		rf.log = append([]Entry(nil), Entry{-1, 0, 0})
 	}
 
+	rf.logBaseTerm = lastIncludedTerm
 	rf.logBaseIndex = lastIncludedIndex
 	rf.snapshot = snapshot
 	rf.commitIndex = lastIncludedIndex
 	rf.lastApplied = lastIncludedIndex
-	rf.saveStateAndSnapshot()
+	rf.saveStateAndSnapshot(snapshot)
 
 	return true
 }
@@ -46,6 +47,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 		return
 	}
 	//fmt.Println("start snapshot", rf.commitIndex)
+	rf.logBaseTerm = rf.log[len(rf.log)-1].Term
 	logs := rf.log[index-rf.logBaseIndex+1:]
 	rf.log = make([]Entry, 0)
 	rf.log = append(rf.log, Entry{-1, 0, 0})
@@ -53,39 +55,41 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.logBaseIndex = index
 	rf.snapshot = snapshot
 
-	rf.saveStateAndSnapshot()
+	rf.saveStateAndSnapshot(snapshot)
 }
 
-func (rf *Raft) saveStateAndSnapshot() {
+func (rf *Raft) saveStateAndSnapshot(snapshot []byte) {
 	w1 := new(bytes.Buffer)
 	e1 := labgob.NewEncoder(w1)
 	e1.Encode(rf.term)
 	e1.Encode(rf.log)
 	e1.Encode(rf.voteFor)
+	e1.Encode(rf.logBaseIndex)
+	e1.Encode(rf.logBaseTerm)
 	data1 := w1.Bytes()
 	//fmt.Println(rf.me, "persist")
 
-	w2 := new(bytes.Buffer)
-	e2 := labgob.NewEncoder(w2)
-	e2.Encode(rf.snapshot)
-	data2 := w2.Bytes()
-
-	rf.persister.SaveStateAndSnapshot(data1, data2)
+	rf.persister.SaveStateAndSnapshot(data1, snapshot)
 }
 
-func (rf *Raft) readSnapshot(data []byte) {
-	if data == nil || len(data) < 1 { // bootstrap without any state?
-		return
-	}
-	r := bytes.NewBuffer(data)
-	d := labgob.NewDecoder(r)
-	var snapshot []byte
-	if d.Decode(&snapshot) != nil {
-		fmt.Println("Decode error!")
-	} else {
-		//fmt.Println("restart:", term, log, voteFor)
-		rf.snapshot = snapshot
-	}
+func (rf *Raft) readSnapshot(data []byte) []byte {
+	//if data == nil || len(data) < 1 { // bootstrap without any state?
+	//	return
+	//}
+	//fmt.Println(rf.me, "data is ok")
+	//r := bytes.NewBuffer(data)
+	//d := labgob.NewDecoder(r)
+	//var snapshot []byte
+	//var logBaseIndex int
+	//var logBaseTerm int
+	//if d.Decode(&snapshot) != nil || d.Decode(&logBaseIndex) != nil || d.Decode(&logBaseTerm) != nil {
+	//	fmt.Println("Decode error!")
+	//} else {
+	//	rf.snapshot = snapshot
+	//	rf.logBaseIndex = logBaseIndex
+	//	rf.logBaseTerm = logBaseTerm
+	//}
+	return data
 }
 
 func (rf *Raft) leaderSendSnapshot(idx int) {
@@ -121,6 +125,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		rf.term = args.Term
 		rf.voteFor = -1
 		rf.state = follow
+		rf.vote = false
 	}
 	reply.Term = rf.term
 
