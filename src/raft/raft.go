@@ -47,6 +47,7 @@ type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
+	CommandTerm  int
 
 	// For 2D:
 	SnapshotValid bool
@@ -332,6 +333,7 @@ func (rf *Raft) applier() {
 				CommandValid: true,
 				Command:      rf.log[rf.lastApplied-rf.logBaseIndex].Command,
 				CommandIndex: rf.log[rf.lastApplied-rf.logBaseIndex].Index,
+				CommandTerm:  rf.log[rf.lastApplied-rf.logBaseIndex].Term,
 			}
 			rf.mu.Unlock()
 			//fmt.Println(rf.me, applyMsg)
