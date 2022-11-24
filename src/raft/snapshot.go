@@ -53,6 +53,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.log = append(rf.log, Entry{-1, 0, 0})
 	rf.log = append(rf.log, logs...)
 	rf.logBaseIndex = index
+	rf.lastApplied = max(rf.lastApplied, rf.logBaseIndex)
 	rf.snapshot = snapshot
 
 	rf.saveStateAndSnapshot(snapshot)
@@ -113,6 +114,7 @@ func (rf *Raft) leaderSendSnapshot(idx int) {
 		return
 	}
 
+	//fmt.Println(idx, "Install Snapshot", args.LastIncludeIndex, rf.nextIndex)
 	rf.nextIndex[idx] = args.LastIncludeIndex + 1
 	rf.matchIndex[idx] = args.LastIncludeIndex
 }

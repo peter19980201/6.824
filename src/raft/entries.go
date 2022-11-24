@@ -22,9 +22,15 @@ func (rf *Raft) appendEntries(heartbeat bool) {
 	for idx, _ := range rf.peers {
 		if idx != rf.me {
 			if heartbeat == true || rf.log[len(rf.log)-1].Index >= rf.nextIndex[idx] {
+				//fmt.Println(rf.me, idx, rf.nextIndex, rf.logBaseIndex)
 				if rf.nextIndex[idx] <= rf.logBaseIndex {
 					go rf.leaderSendSnapshot(idx)
 					continue
+				}
+				//这里不知道为什么会出现这种情况，先这样重置一下nextIndex
+				if rf.logBaseIndex+len(rf.log)-rf.nextIndex[idx] < 0 {
+					//fmt.Println(idx, rf.logBaseIndex, len(rf.log), rf.nextIndex[idx])
+					rf.nextIndex[idx] = rf.logBaseIndex + len(rf.log)
 				}
 
 				args := &AppendEntriesArgs{
@@ -34,6 +40,10 @@ func (rf *Raft) appendEntries(heartbeat bool) {
 					PreLogTerm:   rf.log[rf.nextIndex[idx]-1-rf.logBaseIndex].Term,
 					Entries:      make([]Entry, rf.logBaseIndex+len(rf.log)-rf.nextIndex[idx]),
 					LeaderCommit: rf.commitIndex,
+				}
+				//对于preLog是log中的第一个时，需要特殊处理，将从log中读取换成读取preLog参数
+				if rf.nextIndex[idx]-1-rf.logBaseIndex == 0 {
+					args.PreLogTerm = rf.logBaseTerm
 				}
 				copy(args.Entries, rf.log[rf.nextIndex[idx]-rf.logBaseIndex:len(rf.log)])
 				//fmt.Println(rf.me, idx, args)
@@ -84,7 +94,9 @@ func (rf *Raft) leaderSendEntries(idx int, args *AppendEntriesArgs) {
 		}
 		//fmt.Println("start compare count and totalNum", count)
 		if count > len(rf.peers)/2 && rf.commitIndex < rf.matchIndex[idx] && rf.term == args.Term {
-			rf.commitIndex = rf.matchIndex[idx]
+			if len(args.Entries) > 0 && args.Entries[len(args.Entries)-1].Term == rf.term {
+				rf.commitIndex = rf.matchIndex[idx]
+			}
 		}
 	} else {
 		lastLogInTerm := -1
@@ -102,6 +114,7 @@ func (rf *Raft) leaderSendEntries(idx int, args *AppendEntriesArgs) {
 		} else {
 			rf.nextIndex[idx] = lastLogInTerm
 		}
+		//fmt.Println(rf.me, rf.nextIndex, "after a appendEntries")
 		//rf.nextIndex[idx]--
 		go rf.appendEntries(false)
 	}
@@ -172,16 +185,24 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.ConflictIndex = rf.logBaseIndex + len(rf.log)
 		return
 	}
+	//对于preLog是log中的第一个时，需要特殊处理，将从log中读取换成读取preLog参数
+	tmpPreLogTerm := 0
+	if args.PreLogIndex-rf.logBaseIndex == 0 {
+		tmpPreLogTerm = rf.logBaseTerm
+	} else {
+		tmpPreLogTerm = rf.log[args.PreLogIndex-rf.logBaseIndex].Term
+	}
 
-	if args.PreLogTerm != rf.log[args.PreLogIndex-rf.logBaseIndex].Term {
+	if args.PreLogTerm != tmpPreLogTerm {
 		reply.Success = false
-		reply.ConflictTerm = rf.log[args.PreLogIndex-rf.logBaseIndex].Term
+		reply.ConflictTerm = tmpPreLogTerm
 		for i := 0; i <= args.PreLogIndex-rf.logBaseIndex; i++ {
 			if rf.log[i].Term == reply.ConflictTerm {
 				reply.ConflictIndex = i
 				break
 			}
 		}
+		//fmt.Println("333333333333333333333", args.PreLogTerm, args.PreLogIndex, rf.logBaseIndex, reply.ConflictIndex)
 		return
 	}
 

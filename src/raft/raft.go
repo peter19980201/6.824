@@ -271,7 +271,10 @@ func (rf *Raft) ticker() {
 	for rf.killed() == false {
 		time.Sleep(rf.heartBeat)
 		rf.mu.Lock()
-		//fmt.Println(rf.me, rf.state, rf.term, rf.log, rf.commitIndex, rf.nextIndex, "state:", rf.state, "term:", rf.term, "voteFor:", rf.voteFor)
+		if len(rf.log) > 1 {
+			//fmt.Println(rf.me, rf.log[1], rf.log[len(rf.log)-1], rf.commitIndex, rf.nextIndex, "state:", rf.state, "term:", rf.term, "voteFor:", rf.voteFor)
+		}
+
 		if rf.state == leader {
 			go rf.appendEntries(true)
 		}
@@ -306,14 +309,22 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 	rf.log = make([]Entry, 0)
 	rf.log = append(rf.log, Entry{-1, 0, 0})
 	rf.nextIndex = make([]int, len(peers))
-	for idx, _ := range rf.nextIndex {
-		rf.nextIndex[idx] = len(rf.log)
-	}
+
 	rf.matchIndex = make([]int, len(peers))
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 	rf.snapshot = rf.readSnapshot(persister.ReadSnapshot())
 	rf.lastApplied = rf.logBaseIndex
+	for idx, _ := range rf.nextIndex {
+		rf.nextIndex[idx] = len(rf.log) + rf.logBaseIndex
+	}
+
+	args := &InstallSnapshotArgs{
+		LastIncludeIndex: rf.logBaseIndex,
+		LastIncludeTerm:  rf.logBaseTerm,
+		Data:             rf.snapshot,
+	}
+	go rf.applySnapshot(args)
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
@@ -359,4 +370,13 @@ func (rf *Raft) applySnapshot(args *InstallSnapshotArgs) {
 
 func (rf *Raft) setElectionTime() time.Time {
 	return time.Now().Add(time.Duration(150+rand2.Int()%150) * time.Millisecond)
+}
+
+func (rf *Raft) SizeOfRaftLog() int {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	ans := rf.persister.RaftStateSize()
+
+	return ans
 }

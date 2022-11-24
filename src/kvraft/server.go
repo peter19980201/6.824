@@ -4,6 +4,7 @@ import (
 	"6.824/labgob"
 	"6.824/labrpc"
 	"6.824/raft"
+	"bytes"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -42,6 +43,8 @@ type KVServer struct {
 	clientReply map[int64]int               //key是client的id，value是命令的id以及回复，用于检测command的重复
 	replyChMap  map[int]chan ApplyNotifyMsg //key是命令在raft层的index，value是命令的回复，用于接收raft的回复
 	db          db
+
+	lastAppliedIndex int
 }
 
 //包含所有的信息返回参数，记录返回信息的模板
@@ -55,9 +58,9 @@ func (kv *KVServer) ReceiveApplyMsg() {
 		select {
 		case applyMsg := <-kv.applyCh:
 			if applyMsg.CommandValid {
-				kv.ApplyCommand(applyMsg)
+				go kv.ApplyCommand(applyMsg)
 			} else if applyMsg.SnapshotValid {
-				//kv.ApplySnapshot(applyMsg)
+				go kv.ApplySnapshot(applyMsg)
 			}
 		}
 	}
@@ -86,6 +89,8 @@ func (kv *KVServer) ApplyCommand(applyMsg raft.ApplyMsg) {
 		msg.Err = OK
 	}
 
+	kv.lastAppliedIndex = max(applyMsg.CommandIndex, kv.lastAppliedIndex)
+
 	if term, isLeader := kv.rf.GetState(); !isLeader || term != applyMsg.CommandTerm {
 		return
 	}
@@ -96,6 +101,45 @@ func (kv *KVServer) ApplyCommand(applyMsg raft.ApplyMsg) {
 	}
 
 	kv.replyChMap[index] <- msg
+}
+
+func (kv *KVServer) ApplySnapshot(applyMsg raft.ApplyMsg) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	r := bytes.NewBuffer(applyMsg.Snapshot)
+	d := labgob.NewDecoder(r)
+	d.Decode(&kv.db)
+	d.Decode(&kv.clientReply)
+
+	kv.lastAppliedIndex = applyMsg.SnapshotIndex
+
+	go kv.rf.CondInstallSnapshot(applyMsg.SnapshotTerm, applyMsg.SnapshotIndex, applyMsg.Snapshot)
+}
+
+func (kv *KVServer) snapshotLoop() {
+	for !kv.killed() {
+		var snapshot []byte
+		var lastIncludeIndex int
+
+		kv.mu.Lock()
+		//fmt.Println(kv.me, kv.maxraftstate, kv.rf.SizeOfRaftLog(), kv.lastAppliedIndex)
+		if kv.maxraftstate != -1 && kv.maxraftstate <= kv.rf.SizeOfRaftLog() {
+			w := new(bytes.Buffer)
+			e := labgob.NewEncoder(w)
+			e.Encode(kv.db)
+			e.Encode(kv.clientReply)
+			snapshot = w.Bytes()
+			lastIncludeIndex = kv.lastAppliedIndex
+		}
+		kv.mu.Unlock()
+
+		if snapshot != nil {
+			go kv.rf.Snapshot(lastIncludeIndex, snapshot)
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -116,7 +160,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	}
 
 	kv.mu.Lock()
-	replyCh := make(chan ApplyNotifyMsg, 1)
+	replyCh := make(chan ApplyNotifyMsg)
 	kv.replyChMap[index] = replyCh
 	kv.mu.Unlock()
 
@@ -161,7 +205,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	}
 	//fmt.Println(kv.me, "before raft!")
 	kv.mu.Lock()
-	replyCh := make(chan ApplyNotifyMsg, 1)
+	replyCh := make(chan ApplyNotifyMsg)
 	kv.replyChMap[index] = replyCh
 	kv.mu.Unlock()
 
@@ -228,11 +272,14 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.replyChMap = make(map[int]chan ApplyNotifyMsg)
 	kv.clientReply = make(map[int64]int)
-	kv.db.m = make(map[string]string)
+	kv.db.M = make(map[string]string)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	kv.maxraftstate = maxraftstate
 
 	// You may need initialization code here.
 
 	go kv.ReceiveApplyMsg()
+
+	go kv.snapshotLoop()
 	return kv
 }
